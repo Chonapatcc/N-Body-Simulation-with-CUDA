@@ -1,0 +1,3 @@
+nbody_sequential.cpp
+
+g++ -o seq_csv_batch src/nbody_sequential.cpp -std=c++17 -O3
