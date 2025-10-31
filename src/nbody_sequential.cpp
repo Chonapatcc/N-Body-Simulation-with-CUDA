@@ -3,12 +3,12 @@
 #include <cmath>
 #include <chrono>
 #include <string>
-#include <filesystem> // For directory scanning (requires C++17)
-#include <fstream>    // For reading files
-#include <sstream>    // For parsing file lines
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <iomanip>
+#include <utility>
 
-// --- Constants and Structs (Unchanged) ---
 const float G = 6.67430e-11f;
 const float EPSILON = 1e-3f;
 
@@ -22,10 +22,6 @@ struct Acceleration {
     float ax, ay, az;
 };
 
-/**
- * UPDATED FUNCTION: loadParticlesFromCSV
- * Loads particle data from a specified CSV file.
- */
 int loadParticlesFromCSV(std::vector<Particle>& particles, const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -34,7 +30,7 @@ int loadParticlesFromCSV(std::vector<Particle>& particles, const std::string& fi
     }
 
     std::string line;
-    bool is_header = true; // Flag to skip the first line (header)
+    bool is_header = true;
     int n_loaded = 0;
 
     while (std::getline(file, line)) {
@@ -60,11 +56,9 @@ int loadParticlesFromCSV(std::vector<Particle>& particles, const std::string& fi
             }
         }
 
-        // --- THIS IS THE ONLY LINE I CHANGED ---
-        // We now accept 7 or more columns, to safely ignore extra
-        // columns like particle IDs.
+
         if (values.size() >= 7) { 
-        // -------------------------------------
+      
             Particle p;
             p.x = values[0];
             p.y = values[1];
@@ -75,19 +69,17 @@ int loadParticlesFromCSV(std::vector<Particle>& particles, const std::string& fi
             p.mass = values[6];
             particles.push_back(p);
             n_loaded++;
-        } else if (!values.empty()) {
-             // This warning for short lines (like the 4-column one) is still correct.
-             std::cerr << "Warning: Skipping malformed line in " << filename << " (expected >= 7 columns): " << line << std::endl;
+            } else if (!values.empty()) {
+            std::cerr << "Warning: Skipping malformed line in " << filename << " (expected >= 7 columns): " << line << std::endl;
         }
     }
 
     file.close();
     std::cout << "Successfully loaded " << n_loaded << " particles from " << filename << std::endl;
-    return n_loaded; // Return the number of particles
+    return n_loaded;
 }
 
 
-// --- calculateForces (Unchanged) ---
 void calculateForces(std::vector<Particle>& particles, std::vector<Acceleration>& acc, int N) {
     for (int i = 0; i < N; ++i) {
         float total_fx = 0.0f;
@@ -113,7 +105,7 @@ void calculateForces(std::vector<Particle>& particles, std::vector<Acceleration>
     }
 }
 
-// --- updateParticles (Unchanged) ---
+
 void updateParticles(std::vector<Particle>& particles, const std::vector<Acceleration>& acc, int N, float dt) {
     for (int i = 0; i < N; ++i) {
         particles[i].vx += acc[i].ax * dt;
@@ -125,8 +117,6 @@ void updateParticles(std::vector<Particle>& particles, const std::vector<Acceler
     }
 }
 
-
-// --- getCSVFiles (Unchanged) ---
 std::vector<std::string> getCSVFiles(const std::string& directoryPath) {
     std::vector<std::string> csvFiles;
     try {
@@ -141,10 +131,70 @@ std::vector<std::string> getCSVFiles(const std::string& directoryPath) {
     return csvFiles;
 }
 
+void appendTimingForFile(const std::string& filename, long long durationMs) {
+    const std::filesystem::path inputPath(filename);
+    const std::filesystem::path timingDir = inputPath.parent_path() / "timelog";
+    try {
+        std::filesystem::create_directories(timingDir);
+    } catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Error creating timing directory " << timingDir << ": " << e.what() << std::endl;
+        return;
+    }
 
-// --- main() (Unchanged) ---
+    const std::filesystem::path perFilePath = timingDir / inputPath.filename();
+    const bool isNewFile = !std::filesystem::exists(perFilePath);
+
+    std::ofstream out(perFilePath, std::ios::app);
+    if (!out.is_open()) {
+        std::cerr << "Error: Could not open timing file " << perFilePath << std::endl;
+        return;
+    }
+
+    if (isNewFile) {
+        out << "duration_ms\n";
+    }
+    out << durationMs << '\n';
+}
+
+void writeTimingSummary(const std::string& directoryPath, const std::vector<std::pair<std::string, long long>>& timings) {
+    if (timings.empty()) {
+        return;
+    }
+
+    std::filesystem::path root(directoryPath);
+    std::filesystem::path targetDir = root;
+    if (!root.has_filename()) {
+        targetDir = root.parent_path();
+    }
+
+    std::filesystem::path timingDir = targetDir / "timelog";
+    try {
+        std::filesystem::create_directories(timingDir);
+    } catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Error creating timing directory " << timingDir << ": " << e.what() << std::endl;
+        return;
+    }
+
+    std::string summaryName = targetDir.filename().string();
+    if (summaryName.empty()) {
+        summaryName = "timelog";
+    }
+
+    std::filesystem::path summaryPath = timingDir / (summaryName + ".csv");
+    std::ofstream out(summaryPath);
+    if (!out.is_open()) {
+        std::cerr << "Error: Could not open summary timing file " << summaryPath << std::endl;
+        return;
+    }
+
+    out << "filename,duration_ms\n";
+    for (const auto& entry : timings) {
+        out << std::filesystem::path(entry.first).filename().string() << "," << entry.second << '\n';
+    }
+}
+
 int main() {
-    const float dt = 0.01f; // Time step
+    const float dt = 0.01f; 
     const int STEPS = 10;
     const std::string directoryPath = "data/star_cluster_simulation"; 
 
@@ -157,6 +207,8 @@ int main() {
 
     std::cout << "Found " << csvFiles.size() << " files to process." << std::endl;
     std::cout << "========================================" << std::endl;
+
+    std::vector<std::pair<std::string, long long>> timingSummary;
 
     for (const std::string& filename : csvFiles) {
         
@@ -188,11 +240,16 @@ int main() {
         auto stop = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
         
+        timingSummary.emplace_back(filename, duration.count());
+        appendTimingForFile(filename, duration.count());
+
         std::cout << "Sequential simulation for " << filename << " finished in " 
                   << duration.count() << " ms." << std::endl;
         std::cout << "========================================" << std::endl;
 
     } 
+
+    writeTimingSummary(directoryPath, timingSummary);
 
     std::cout << "All simulations complete." << std::endl;
     return 0;

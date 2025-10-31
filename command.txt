@@ -1,3 +1,14 @@
 nbody_sequential.cpp
 
 g++ -o seq_csv_batch src/nbody_sequential.cpp -std=c++17 -O3
+
+cuda 
+
+nvcc -std=c++17 -O2 -o approach1.exe src\approach1.cu
+nvcc -std=c++17 -O2 -o approach2.exe src\approach2.cu
+nvcc -std=c++17 -O2 -o approach3.exe src\approach3.cu
+nvcc -std=c++17 -O2 -o approach4.exe src\approach4.cu
+nvcc -std=c++17 -O2 -o approach5.exe src\approach5.cu
+nvcc -std=c++17 -O2 -o approach6.exe src\approach6.cu
+
+.\approach1.exe
