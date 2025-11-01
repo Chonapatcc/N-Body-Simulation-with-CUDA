@@ -12,6 +12,28 @@ This repo contains a sequential CPU implementation and six CUDA approaches that 
 - Output logs: per-file run times stored under `data/star_cluster_simulation/timelog/`
 - Progress: executables print step progress as percentages
 
+## 0) Clone the repository and prepare data
+
+Clone this repo:
+
+```cmd
+git clone https://github.com/Chonapatcc/N-Body-Simulation-with-CUDA.git
+cd N-Body-Simulation-with-CUDA
+```
+
+Data files: If your clone doesn’t include the CSVs or you have a newer `data.zip` archive, extract it into the `data` folder so that the CSVs end up under `data\star_cluster_simulation\`.
+
+- Using CMD (tar is available on recent Windows 10/11):
+```cmd
+mkdir data 2>nul
+tar -xf data.zip -C data
+```
+
+- Using PowerShell (alternative):
+```powershell
+PowerShell -NoProfile -Command "New-Item -ItemType Directory -Force -Path data | Out-Null; Expand-Archive -Path data.zip -DestinationPath data -Force"
+```
+
 ## 1) Prerequisites
 
 Make sure you have a compatible NVIDIA GPU and drivers.
@@ -65,7 +87,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliar
 Change to the repository root:
 
 ```cmd
-cd C:\Users\chona\Code\N-Body-Simulation-with-CUDA
+cd N-Body-Simulation-with-CUDA
 ```
 
 ### A) Build the CPU sequential version
