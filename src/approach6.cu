@@ -9,20 +9,20 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <numeric>
+#include <numeric> // For std::accumulate
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
-#define CUDA_CHECK(expr)                                                         \
-    do {                                                                         \
-        cudaError_t err__ = (expr);                                              \
-        if (err__ != cudaSuccess) {                                              \
-            std::cerr << "CUDA error: " << cudaGetErrorString(err__)             \
-                      << " at " << __FILE__ << ":" << __LINE__ << std::endl;     \
-            std::exit(EXIT_FAILURE);                                             \
-        }                                                                        \
+#define CUDA_CHECK(expr)                                                      \
+    do {                                                                      \
+        cudaError_t err__ = (expr);                                           \
+        if (err__ != cudaSuccess) {                                           \
+            std::cerr << "CUDA error: " << cudaGetErrorString(err__)          \
+                      << " at " << __FILE__ << ":" << __LINE__ << std::endl;  \
+            std::exit(EXIT_FAILURE);                                          \
+        }                                                                     \
     } while (0)
 
 constexpr float G_CONST = 6.67430e-11f;
@@ -40,11 +40,9 @@ int loadParticlesFromCSV(std::vector<Particle>& particles, const std::string& fi
         std::cerr << "Error: Could not open file " << filename << std::endl;
         return -1;
     }
-
     std::string line;
     bool is_header = true;
     int n_loaded = 0;
-
     while (std::getline(file, line)) {
         if (is_header) {
             is_header = false;
@@ -180,6 +178,7 @@ __inline__ __device__ float blockReduceSum(float val) {
     int warpId = threadIdx.x >> 5;
 
     val = warpReduceSum(val);
+
     if (lane == 0) {
         shared[warpId] = val;
     }
@@ -193,12 +192,12 @@ __inline__ __device__ float blockReduceSum(float val) {
 }
 
 __global__ void nbodyAdvancedKernel(const float4* __restrict__ posMass_in,
-                                    const float4* __restrict__ vel_in,
-                                    float4* __restrict__ posMass_out,
-                                    float4* __restrict__ vel_out,
-                                    int N,
-                                    float dt,
-                                    float* __restrict__ energyAccumulator) {
+                                  const float4* __restrict__ vel_in,
+                                  float4* __restrict__ posMass_out,
+                                  float4* __restrict__ vel_out,
+                                  int N,
+                                  float dt,
+                                  float* __restrict__ energyAccumulator) {
     extern __shared__ float4 tilePosMass[];
     const int tid = threadIdx.x;
     const int gid = blockIdx.x * blockDim.x + tid;
@@ -261,7 +260,9 @@ __global__ void nbodyAdvancedKernel(const float4* __restrict__ posMass_in,
     z = fmaf(vz, dt, z);
 
     float kinetic = 0.5f * mass * (vx * vx + vy * vy + vz * vz);
+    
     float blockSum = blockReduceSum(kinetic);
+    
     if (threadIdx.x == 0) {
         atomicAdd(energyAccumulator, blockSum);
     }
@@ -285,6 +286,11 @@ int main() {
     std::cout << "========================================" << std::endl;
 
     std::vector<std::pair<std::string, long long>> timingSummary;
+
+    CUDA_CHECK(cudaFuncSetAttribute(
+        nbodyAdvancedKernel,
+        cudaFuncAttributePreferredSharedMemoryCarveout,
+        100));
 
     for (const std::string& filename : csvFiles) {
         std::vector<Particle> particles;
@@ -311,18 +317,19 @@ int main() {
 
         const size_t bytesVec4 = static_cast<size_t>(N) * sizeof(float4);
 
+        CUDA_CHECK(cudaHostRegister(h_posMass.data(), bytesVec4, cudaHostRegisterDefault));
+        CUDA_CHECK(cudaHostRegister(h_vel.data(), bytesVec4, cudaHostRegisterDefault));
+        std::vector<float> energyHistory(STEPS, 0.0f);
+        CUDA_CHECK(cudaHostRegister(energyHistory.data(), sizeof(float) * STEPS, cudaHostRegisterDefault));
+
         float4* d_posMass[2];
         float4* d_vel[2];
         for (int idx = 0; idx < 2; ++idx) {
             CUDA_CHECK(cudaMalloc(&d_posMass[idx], bytesVec4));
             CUDA_CHECK(cudaMalloc(&d_vel[idx], bytesVec4));
         }
-
         float* d_energyAccumulator = nullptr;
         CUDA_CHECK(cudaMalloc(&d_energyAccumulator, sizeof(float)));
-
-        CUDA_CHECK(cudaMemcpy(d_posMass[0], h_posMass.data(), bytesVec4, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_vel[0], h_vel.data(), bytesVec4, cudaMemcpyHostToDevice));
 
         int minGridSize = 0;
         int blockSize = 0;
@@ -335,24 +342,39 @@ int main() {
         blockSize = std::clamp(blockSize, 128, 512);
         const int blocks = (N + blockSize - 1) / blockSize;
         const size_t sharedBytes = static_cast<size_t>(blockSize) * sizeof(float4);
+        
+        std::cout << "Starting GPU N-Body simulation (streams + tuned kernel + reduction)..." << std::endl;
+        std::cout << "Using optimal blockSize: " << blockSize << " (GridSize: " << blocks << ")" << std::endl;
 
-        std::vector<float> energyHistory(STEPS, 0.0f);
-
-        std::cout << "Starting GPU N-Body simulation (advanced kernel patterns)..." << std::endl;
+        cudaStream_t copyStream{};
+        cudaStream_t computeStream{};
+        CUDA_CHECK(cudaStreamCreateWithFlags(&copyStream, cudaStreamNonBlocking));
+        CUDA_CHECK(cudaStreamCreateWithFlags(&computeStream, cudaStreamNonBlocking));
 
         cudaEvent_t startEvent{};
         cudaEvent_t stopEvent{};
+        cudaEvent_t h2dReady{};
         CUDA_CHECK(cudaEventCreate(&startEvent));
         CUDA_CHECK(cudaEventCreate(&stopEvent));
-        CUDA_CHECK(cudaEventRecord(startEvent));
+        CUDA_CHECK(cudaEventCreateWithFlags(&h2dReady, cudaEventDisableTiming));
+
+        CUDA_CHECK(cudaEventRecord(startEvent, copyStream));
+        
+        CUDA_CHECK(cudaMemcpyAsync(d_posMass[0], h_posMass.data(), bytesVec4, cudaMemcpyHostToDevice, copyStream));
+        CUDA_CHECK(cudaMemcpyAsync(d_vel[0], h_vel.data(), bytesVec4, cudaMemcpyHostToDevice, copyStream));
+        
+        CUDA_CHECK(cudaEventRecord(h2dReady, copyStream));
+        
+        CUDA_CHECK(cudaStreamWaitEvent(computeStream, h2dReady, 0));
+
 
         int current = 0;
         int next = 1;
 
         for (int step = 0; step < STEPS; ++step) {
-            CUDA_CHECK(cudaMemset(d_energyAccumulator, 0, sizeof(float)));
+            CUDA_CHECK(cudaMemsetAsync(d_energyAccumulator, 0, sizeof(float), computeStream));
 
-            nbodyAdvancedKernel<<<blocks, blockSize, sharedBytes>>>(
+            nbodyAdvancedKernel<<<blocks, blockSize, sharedBytes, computeStream>>>(
                 d_posMass[current],
                 d_vel[current],
                 d_posMass[next],
@@ -361,12 +383,12 @@ int main() {
                 dt,
                 d_energyAccumulator);
             CUDA_CHECK(cudaPeekAtLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
 
-            CUDA_CHECK(cudaMemcpy(&energyHistory[step],
-                                  d_energyAccumulator,
-                                  sizeof(float),
-                                  cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpyAsync(&energyHistory[step],
+                                       d_energyAccumulator,
+                                       sizeof(float),
+                                       cudaMemcpyDeviceToHost,
+                                       computeStream));
 
             if ((step + 1) % std::max(1, STEPS / 10) == 0) {
                 float percent = (step + 1) * 100.0f / static_cast<float>(STEPS);
@@ -378,8 +400,10 @@ int main() {
         }
         std::cout << std::endl;
 
-        CUDA_CHECK(cudaEventRecord(stopEvent));
-        CUDA_CHECK(cudaEventSynchronize(stopEvent));
+        CUDA_CHECK(cudaEventRecord(stopEvent, computeStream));
+        
+        CUDA_CHECK(cudaStreamSynchronize(computeStream));
+        CUDA_CHECK(cudaStreamSynchronize(copyStream));
 
         float elapsedMs = 0.0f;
         CUDA_CHECK(cudaEventElapsedTime(&elapsedMs, startEvent, stopEvent));
@@ -387,12 +411,16 @@ int main() {
 
         CUDA_CHECK(cudaEventDestroy(startEvent));
         CUDA_CHECK(cudaEventDestroy(stopEvent));
+        CUDA_CHECK(cudaEventDestroy(h2dReady));
+        CUDA_CHECK(cudaStreamDestroy(computeStream));
+        CUDA_CHECK(cudaStreamDestroy(copyStream));
 
         timingSummary.emplace_back(filename, durationMs);
         appendTimingForFile(filename, durationMs);
 
         std::cout << "GPU simulation for " << filename << " finished in "
                   << durationMs << " ms." << std::endl;
+        
         std::cout << "Average kinetic energy: "
                   << std::fixed << std::setprecision(6)
                   << std::accumulate(energyHistory.begin(), energyHistory.end(), 0.0f) / STEPS
@@ -404,10 +432,13 @@ int main() {
             CUDA_CHECK(cudaFree(d_posMass[idx]));
             CUDA_CHECK(cudaFree(d_vel[idx]));
         }
+
+        CUDA_CHECK(cudaHostUnregister(h_posMass.data()));
+        CUDA_CHECK(cudaHostUnregister(h_vel.data()));
+        CUDA_CHECK(cudaHostUnregister(energyHistory.data()));
     }
 
     writeTimingSummary(directoryPath, timingSummary);
-
     std::cout << "All GPU simulations complete." << std::endl;
     return 0;
 }

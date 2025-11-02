@@ -14,22 +14,22 @@
 #include <utility>
 #include <vector>
 
-#define CUDA_CHECK(expr)                                                         \
-    do {                                                                         \
-        cudaError_t err__ = (expr);                                              \
-        if (err__ != cudaSuccess) {                                              \
-            std::cerr << "CUDA error: " << cudaGetErrorString(err__)             \
-                      << " at " << __FILE__ << ":" << __LINE__ << std::endl;     \
-            std::exit(EXIT_FAILURE);                                             \
-        }                                                                        \
+#define CUDA_CHECK(expr)                                                      \
+    do {                                                                      \
+        cudaError_t err__ = (expr);                                           \
+        if (err__ != cudaSuccess) {                                           \
+            std::cerr << "CUDA error: " << cudaGetErrorString(err__)          \
+                      << " at " << __FILE__ << ":" << __LINE__ << std::endl;  \
+            std::exit(EXIT_FAILURE);                                          \
+        }                                                                     \
     } while (0)
 
 constexpr float G_CONST = 6.67430e-11f;
 constexpr float EPSILON_CONST = 1e-3f;
 
 struct Particle {
-    float x, y, z;
-    float vx, vy, vz;
+    float x, y, z;    // Position
+    float vx, vy, vz; // Velocity
     float mass;
 };
 
@@ -165,15 +165,17 @@ void writeTimingSummary(const std::string& directoryPath, const std::vector<std:
     }
 }
 
-__global__ void nbodyStreamKernel(const float4* __restrict__ posMass_in,
+__global__ void nbodyUltimateKernel(const float4* __restrict__ posMass_in,
                                   const float4* __restrict__ vel_in,
                                   float4* __restrict__ posMass_out,
                                   float4* __restrict__ vel_out,
                                   int N,
                                   float dt) {
     extern __shared__ float4 tilePosMass[];
+
     const int tid = threadIdx.x;
     const int gid = blockIdx.x * blockDim.x + tid;
+
     if (gid >= N) {
         return;
     }
@@ -194,33 +196,39 @@ __global__ void nbodyStreamKernel(const float4* __restrict__ posMass_in,
     float az = 0.0f;
 
     for (int tileBase = 0; tileBase < N; tileBase += blockDim.x) {
-        int jGlobal = tileBase + tid;
+        const int jGlobal = tileBase + tid;
         if (jGlobal < N) {
             tilePosMass[tid] = posMass_in[jGlobal];
         }
         __syncthreads();
 
-        int tileCount = min(blockDim.x, N - tileBase);
-        #pragma unroll 4
+        const int tileCount = min(blockDim.x, N - tileBase);
+        
+        #pragma unroll 8
         for (int j = 0; j < tileCount; ++j) {
-            int neighborIdx = tileBase + j;
+            const int neighborIdx = tileBase + j;
+
             if (neighborIdx == gid) {
                 continue;
             }
 
-            float4 other = tilePosMass[j];
-            float dx = other.x - x;
-            float dy = other.y - y;
-            float dz = other.z - z;
-            float dist_sq = dx * dx + dy * dy + dz * dz + EPSILON_CONST;
-            float inv_dist = rsqrtf(dist_sq);
-            float inv_dist3 = inv_dist * inv_dist * inv_dist;
-            float scalar = G_CONST * other.w * inv_dist3;
+            const float4 other = tilePosMass[j];
+
+            const float dx = other.x - x;
+            const float dy = other.y - y;
+            const float dz = other.z - z;
+
+            const float dist_sq = dx * dx + dy * dy + dz * dz + EPSILON_CONST;
+            const float inv_dist = rsqrtf(dist_sq);
+            const float inv_dist3 = inv_dist * inv_dist * inv_dist;
+
+            const float scalar = G_CONST * other.w * inv_dist3;
 
             ax = fmaf(scalar, dx, ax);
             ay = fmaf(scalar, dy, ay);
             az = fmaf(scalar, dz, az);
         }
+
         __syncthreads();
     }
 
@@ -235,6 +243,7 @@ __global__ void nbodyStreamKernel(const float4* __restrict__ posMass_in,
     vel_out[gid] = make_float4(vx, vy, vz, 0.0f);
     posMass_out[gid] = make_float4(x, y, z, mass);
 }
+
 
 int main() {
     const float dt = 0.01f;
@@ -252,6 +261,11 @@ int main() {
 
     std::vector<std::pair<std::string, long long>> timingSummary;
 
+    CUDA_CHECK(cudaFuncSetAttribute(
+        nbodyUltimateKernel,
+        cudaFuncAttributePreferredSharedMemoryCarveout,
+        100));
+
     for (const std::string& filename : csvFiles) {
         std::vector<Particle> particles;
         int N = loadParticlesFromCSV(particles, filename);
@@ -261,6 +275,20 @@ int main() {
             std::cout << "----------------------------------------" << std::endl;
             continue;
         }
+
+        int minGridSize = 0;
+        int blockSize = 0;
+        CUDA_CHECK(cudaOccupancyMaxPotentialBlockSize(
+            &minGridSize,
+            &blockSize,
+            nbodyUltimateKernel,
+            0,
+            0));
+        
+        blockSize = std::clamp(blockSize, 128, 512);
+        
+        const int blocks = (N + blockSize - 1) / blockSize;
+        const size_t sharedBytes = static_cast<size_t>(blockSize) * sizeof(float4);
 
         std::vector<float4> h_posMass(N);
         std::vector<float4> h_vel(N);
@@ -300,22 +328,23 @@ int main() {
         CUDA_CHECK(cudaEventCreateWithFlags(&h2dReady, cudaEventDisableTiming));
 
         CUDA_CHECK(cudaEventRecord(startEvent, copyStream));
+        
         CUDA_CHECK(cudaMemcpyAsync(d_posMass[0], h_posMass.data(), bytesVec4, cudaMemcpyHostToDevice, copyStream));
         CUDA_CHECK(cudaMemcpyAsync(d_vel[0], h_vel.data(), bytesVec4, cudaMemcpyHostToDevice, copyStream));
+        
         CUDA_CHECK(cudaEventRecord(h2dReady, copyStream));
+        
         CUDA_CHECK(cudaStreamWaitEvent(computeStream, h2dReady, 0));
 
-        const int threadsPerBlock = 256;
-        const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
-        const size_t sharedBytes = static_cast<size_t>(threadsPerBlock) * sizeof(float4);
 
-        std::cout << "Starting GPU N-Body simulation (asynchronous streams)..." << std::endl;
+        std::cout << "Starting GPU N-Body simulation (Ultimate: streams + tuned kernel)..." << std::endl;
+        std::cout << "Using optimal blockSize: " << blockSize << " (GridSize: " << blocks << ")" << std::endl;
 
         int current = 0;
         int next = 1;
 
         for (int step = 0; step < STEPS; ++step) {
-            nbodyStreamKernel<<<blocks, threadsPerBlock, sharedBytes, computeStream>>>(
+            nbodyUltimateKernel<<<blocks, blockSize, sharedBytes, computeStream>>>(
                 d_posMass[current],
                 d_vel[current],
                 d_posMass[next],
@@ -335,6 +364,7 @@ int main() {
         std::cout << std::endl;
 
         CUDA_CHECK(cudaEventRecord(stopEvent, computeStream));
+        
         CUDA_CHECK(cudaStreamSynchronize(computeStream));
         CUDA_CHECK(cudaStreamSynchronize(copyStream));
 
@@ -368,4 +398,4 @@ int main() {
 
     std::cout << "All GPU simulations complete." << std::endl;
     return 0;
-}   
+}
