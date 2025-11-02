@@ -9,7 +9,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <numeric> // For std::accumulate
 #include <sstream>
 #include <string>
 #include <utility>
@@ -164,40 +163,12 @@ void writeTimingSummary(const std::string& directoryPath, const std::vector<std:
     }
 }
 
-__inline__ __device__ float warpReduceSum(float val) {
-    unsigned mask = 0xFFFFFFFF;
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        val += __shfl_down_sync(mask, val, offset);
-    }
-    return val;
-}
-
-__inline__ __device__ float blockReduceSum(float val) {
-    static __shared__ float shared[32];
-    int lane = threadIdx.x & 31;
-    int warpId = threadIdx.x >> 5;
-
-    val = warpReduceSum(val);
-
-    if (lane == 0) {
-        shared[warpId] = val;
-    }
-    __syncthreads();
-
-    val = (threadIdx.x < blockDim.x / 32) ? shared[lane] : 0.0f;
-    if (warpId == 0) {
-        val = warpReduceSum(val);
-    }
-    return val;
-}
-
-__global__ void nbodyAdvancedKernel(const float4* __restrict__ posMass_in,
+__global__ void nbodyOptimizedKernel(const float4* __restrict__ posMass_in,
                                   const float4* __restrict__ vel_in,
                                   float4* __restrict__ posMass_out,
                                   float4* __restrict__ vel_out,
                                   int N,
-                                  float dt,
-                                  float* __restrict__ energyAccumulator) {
+                                  float dt) {
     extern __shared__ float4 tilePosMass[];
     const int tid = threadIdx.x;
     const int gid = blockIdx.x * blockDim.x + tid;
@@ -221,28 +192,28 @@ __global__ void nbodyAdvancedKernel(const float4* __restrict__ posMass_in,
     float az = 0.0f;
 
     for (int tileBase = 0; tileBase < N; tileBase += blockDim.x) {
-        int jGlobal = tileBase + tid;
+        const int jGlobal = tileBase + tid;
         if (jGlobal < N) {
             tilePosMass[tid] = posMass_in[jGlobal];
         }
         __syncthreads();
 
-        int tileCount = min(blockDim.x, N - tileBase);
+        const int tileCount = min(blockDim.x, N - tileBase);
         #pragma unroll 8
         for (int j = 0; j < tileCount; ++j) {
-            int neighborIdx = tileBase + j;
+            const int neighborIdx = tileBase + j;
             if (neighborIdx == gid) {
                 continue;
             }
 
-            float4 other = tilePosMass[j];
-            float dx = other.x - x;
-            float dy = other.y - y;
-            float dz = other.z - z;
-            float dist_sq = dx * dx + dy * dy + dz * dz + EPSILON_CONST;
-            float inv_dist = rsqrtf(dist_sq);
-            float inv_dist3 = inv_dist * inv_dist * inv_dist;
-            float scalar = G_CONST * other.w * inv_dist3;
+            const float4 other = tilePosMass[j];
+            const float dx = other.x - x;
+            const float dy = other.y - y;
+            const float dz = other.z - z;
+            const float dist_sq = dx * dx + dy * dy + dz * dz + EPSILON_CONST;
+            const float inv_dist = rsqrtf(dist_sq);
+            const float inv_dist3 = inv_dist * inv_dist * inv_dist;
+            const float scalar = G_CONST * other.w * inv_dist3;
 
             ax = fmaf(scalar, dx, ax);
             ay = fmaf(scalar, dy, ay);
@@ -258,14 +229,6 @@ __global__ void nbodyAdvancedKernel(const float4* __restrict__ posMass_in,
     x = fmaf(vx, dt, x);
     y = fmaf(vy, dt, y);
     z = fmaf(vz, dt, z);
-
-    float kinetic = 0.5f * mass * (vx * vx + vy * vy + vz * vz);
-    
-    float blockSum = blockReduceSum(kinetic);
-    
-    if (threadIdx.x == 0) {
-        atomicAdd(energyAccumulator, blockSum);
-    }
 
     vel_out[gid] = make_float4(vx, vy, vz, 0.0f);
     posMass_out[gid] = make_float4(x, y, z, mass);
@@ -288,7 +251,7 @@ int main() {
     std::vector<std::pair<std::string, long long>> timingSummary;
 
     CUDA_CHECK(cudaFuncSetAttribute(
-        nbodyAdvancedKernel,
+        nbodyOptimizedKernel,
         cudaFuncAttributePreferredSharedMemoryCarveout,
         100));
 
@@ -319,8 +282,6 @@ int main() {
 
         CUDA_CHECK(cudaHostRegister(h_posMass.data(), bytesVec4, cudaHostRegisterDefault));
         CUDA_CHECK(cudaHostRegister(h_vel.data(), bytesVec4, cudaHostRegisterDefault));
-        std::vector<float> energyHistory(STEPS, 0.0f);
-        CUDA_CHECK(cudaHostRegister(energyHistory.data(), sizeof(float) * STEPS, cudaHostRegisterDefault));
 
         float4* d_posMass[2];
         float4* d_vel[2];
@@ -328,22 +289,20 @@ int main() {
             CUDA_CHECK(cudaMalloc(&d_posMass[idx], bytesVec4));
             CUDA_CHECK(cudaMalloc(&d_vel[idx], bytesVec4));
         }
-        float* d_energyAccumulator = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_energyAccumulator, sizeof(float)));
 
         int minGridSize = 0;
         int blockSize = 0;
         CUDA_CHECK(cudaOccupancyMaxPotentialBlockSize(
             &minGridSize,
             &blockSize,
-            nbodyAdvancedKernel,
+            nbodyOptimizedKernel,
             0,
             0));
         blockSize = std::clamp(blockSize, 128, 512);
         const int blocks = (N + blockSize - 1) / blockSize;
         const size_t sharedBytes = static_cast<size_t>(blockSize) * sizeof(float4);
         
-        std::cout << "Starting GPU N-Body simulation (streams + tuned kernel + reduction)..." << std::endl;
+        std::cout << "Starting GPU N-Body simulation (optimized)..." << std::endl;
         std::cout << "Using optimal blockSize: " << blockSize << " (GridSize: " << blocks << ")" << std::endl;
 
         cudaStream_t copyStream{};
@@ -372,23 +331,14 @@ int main() {
         int next = 1;
 
         for (int step = 0; step < STEPS; ++step) {
-            CUDA_CHECK(cudaMemsetAsync(d_energyAccumulator, 0, sizeof(float), computeStream));
-
-            nbodyAdvancedKernel<<<blocks, blockSize, sharedBytes, computeStream>>>(
+            nbodyOptimizedKernel<<<blocks, blockSize, sharedBytes, computeStream>>>(
                 d_posMass[current],
                 d_vel[current],
                 d_posMass[next],
                 d_vel[next],
                 N,
-                dt,
-                d_energyAccumulator);
+                dt);
             CUDA_CHECK(cudaPeekAtLastError());
-
-            CUDA_CHECK(cudaMemcpyAsync(&energyHistory[step],
-                                       d_energyAccumulator,
-                                       sizeof(float),
-                                       cudaMemcpyDeviceToHost,
-                                       computeStream));
 
             if ((step + 1) % std::max(1, STEPS / 10) == 0) {
                 float percent = (step + 1) * 100.0f / static_cast<float>(STEPS);
@@ -420,14 +370,8 @@ int main() {
 
         std::cout << "GPU simulation for " << filename << " finished in "
                   << durationMs << " ms." << std::endl;
-        
-        std::cout << "Average kinetic energy: "
-                  << std::fixed << std::setprecision(6)
-                  << std::accumulate(energyHistory.begin(), energyHistory.end(), 0.0f) / STEPS
-                  << std::endl;
         std::cout << "========================================" << std::endl;
 
-        CUDA_CHECK(cudaFree(d_energyAccumulator));
         for (int idx = 0; idx < 2; ++idx) {
             CUDA_CHECK(cudaFree(d_posMass[idx]));
             CUDA_CHECK(cudaFree(d_vel[idx]));
@@ -435,7 +379,6 @@ int main() {
 
         CUDA_CHECK(cudaHostUnregister(h_posMass.data()));
         CUDA_CHECK(cudaHostUnregister(h_vel.data()));
-        CUDA_CHECK(cudaHostUnregister(energyHistory.data()));
     }
 
     writeTimingSummary(directoryPath, timingSummary);

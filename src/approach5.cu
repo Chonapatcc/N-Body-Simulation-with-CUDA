@@ -28,8 +28,8 @@ constexpr float G_CONST = 6.67430e-11f;
 constexpr float EPSILON_CONST = 1e-3f;
 
 struct Particle {
-    float x, y, z;    // Position
-    float vx, vy, vz; // Velocity
+    float x, y, z;
+    float vx, vy, vz;
     float mass;
 };
 
