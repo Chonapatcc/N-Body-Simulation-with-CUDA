@@ -1,1 +1,2 @@
- 
+g++ sequential.cc -o sequential.exe
+sequential.exe

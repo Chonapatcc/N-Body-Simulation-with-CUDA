@@ -7,11 +7,11 @@
 #include <chrono>
 using namespace std;
 
-const int n = 10000;
+const int n = 10;
 const double N_steps = 10;
 const double dt = 0.1;
 const double G = 6.6743e-11;
-const double softening = 1e-14;
+const double softening = 1e-8;
 
 struct Particle
 {
@@ -161,12 +161,10 @@ int main()
         nbody();
     }
     
-
     auto end = chrono::high_resolution_clock::now();
 
     chrono::duration<double> elapsed = end - start;
 
     cout << "Time elapsed: " << elapsed.count() << " seconds" <<endl;
     save_force();
-    
 }

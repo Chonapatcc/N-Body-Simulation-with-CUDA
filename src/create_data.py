@@ -2,12 +2,12 @@ import pandas as pd
 import random
 import tqdm
 
-ns = [10**i for i in range(1,7)]
+ns = [10**i for i in range(1,6)]
 
 POS_RANGE = 1
 VEL_RANGE = 0.5
-MASS_RANGE1 = 1e-12
-MASS_RANGE2 = 1e-11
+MASS_RANGE1 = 1e-4
+MASS_RANGE2 = 1e-3
 
 for n in tqdm.tqdm(ns):
     df = pd.DataFrame(index=range(n), columns=["id", "x", "y", "z","vx", "vy", "vz", "mass"])
