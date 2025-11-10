@@ -145,6 +145,10 @@ void nbody()
         particles[i].vy += ay * dt;
         particles[i].vz += az * dt;
 
+        
+    }
+    for(int i=0;i<n;i++)
+    {
         particles[i].update_position(dt);
     }
 }

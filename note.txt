@@ -1,2 +1,2 @@
-g++ sequential.cc -o sequential.exe
-sequential.exe
+g++ sequential_bruteforce.cc -o sequential_bruteforce.exe
+sequential_bruteforce.exe
