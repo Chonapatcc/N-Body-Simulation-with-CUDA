@@ -7,7 +7,7 @@
 #include <chrono>
 using namespace std;
 
-const int n = 10;
+const int n = 10000;
 const double N_steps = 10;
 const double dt = 0.1;
 const double G = 6.6743e-11;
@@ -34,7 +34,7 @@ struct Particle
     }
 };
 
-vector<Particle> particles;
+vector<Particle*> particles;
 
 void read_data()
 {
@@ -65,7 +65,7 @@ void read_data()
             else if(_==6) vz = stod(value);
             else if(_==7) mass = stod(value);
         }
-        particles[i] = Particle(idx, x, y, z, vx, vy, vz, mass);
+        particles[i] = new Particle(idx, x, y, z, vx, vy, vz, mass);
     }
     
     fin.close();
@@ -80,14 +80,14 @@ void show_data()
 {
     for(int i =0 ; i<n ; i++)
     {
-        cout << particles[i].idx << " "
-             << particles[i].x << " "
-             << particles[i].y << " "
-             << particles[i].z << " "
-             << particles[i].vx << " "
-             << particles[i].vy << " "
-             << particles[i].vz << " "
-             << particles[i].mass << " " <<endl;
+        cout << particles[i]->idx << " "
+             << particles[i]->x << " "
+             << particles[i]->y << " "
+             << particles[i]->z << " "
+             << particles[i]->vx << " "
+             << particles[i]->vy << " "
+             << particles[i]->vz << " "
+             << particles[i]->mass << " " <<endl;
     }
 }
 
@@ -95,18 +95,18 @@ void show_force()
 {
     for(int i =0 ;i<n ; i++)
     {
-        cout << "particle " << particles[i].idx << " force: " << particles[i].force << endl;
+        cout << "particle " << particles[i]->idx << " force: " << particles[i]->force << endl;
     }
 }
 
 void save_force()
 {
     fstream fout;
-    fout.open("../result/sequential_force_" + to_string(n) +".csv", ios::out);
+    fout.open("../result/sequential_bruteforce_force_" + to_string(n) +".csv", ios::out);
 
     for(int i =0; i<n ; i++)
     {
-        fout << particles[i].idx << "," << particles[i].force << endl;
+        fout << particles[i]->idx << "," << particles[i]->force << endl;
     }
 
     fout.close();
@@ -123,34 +123,44 @@ void nbody()
         {
             if(i==j) continue;
             
-            double dx = particles[j].x - particles[i].x;
-            double dy = particles[j].y - particles[i].y;
-            double dz = particles[j].z - particles[i].z;
+            double dx = particles[j]->x - particles[i]->x;
+            double dy = particles[j]->y - particles[i]->y;
+            double dz = particles[j]->z - particles[i]->z;
 
             double dist_sqr = dx*dx + dy*dy + dz*dz + softening*softening;
             
             double invDist = 1.0/ sqrtf(dist_sqr);
             double invDistCube = invDist * invDist * invDist;
             
-            double magnitude = G * particles[j].mass * invDistCube;
+            double magnitude = G * particles[j]->mass * invDistCube;
 
             ax += dx * magnitude;
             ay += dy * magnitude;
             az += dz * magnitude;
 
-            double force = magnitude * particles[i].mass;
-            particles[i].force += force;
         }
-        particles[i].vx += ax * dt;
-        particles[i].vy += ay * dt;
-        particles[i].vz += az * dt;
+        
+        double force = sqrtf(ax*ax + ay*ay + az*az) * particles[i]->mass;
+        particles[i]->force = force;
+        
+        particles[i]->vx += ax * dt;
+        particles[i]->vy += ay * dt;
+        particles[i]->vz += az * dt;
 
         
     }
     for(int i=0;i<n;i++)
     {
-        particles[i].update_position(dt);
+        particles[i]->update_position(dt);
     }
+}
+
+void save_time(double time_elapsed)
+{
+    fstream fout;
+    fout.open("../result/sequential_bruteforce_time_" + to_string(n) +".txt", ios::out);
+    fout << "Time elapsed: " << time_elapsed << " seconds" <<endl;
+    fout.close();
 }
 
 int main()
@@ -169,6 +179,6 @@ int main()
 
     chrono::duration<double> elapsed = end - start;
 
-    cout << "Time elapsed: " << elapsed.count() << " seconds" <<endl;
+    save_time(elapsed.count());
     save_force();
 }
