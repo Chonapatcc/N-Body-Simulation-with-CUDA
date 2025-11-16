@@ -5,9 +5,11 @@
 #include <string>
 #include <cmath>
 #include <chrono>
+#include <cuda_runtime.h>
 using namespace std;
 
 const int n = 10000;
+const double theta = 0.5;
 const double N_steps = 10;
 const double dt = 0.1;
 const double G = 6.6743e-11;
@@ -50,7 +52,7 @@ struct Tree
     }
 };
 
-vector<Particle*> particles;
+vector<Particle> particles;
 
 void read_data()
 {
@@ -81,7 +83,7 @@ void read_data()
             else if(_==6) vz = stod(value);
             else if(_==7) mass = stod(value);
         }
-        particles[i] = new Particle(idx, x, y, z, vx, vy, vz, mass);
+        particles[i] = Particle(idx, x, y, z, vx, vy, vz, mass);
     }
     
     fin.close();
@@ -89,21 +91,21 @@ void read_data()
 
 void allocate_memory()
 {
-    particles.resize(n);
+    particles = vector<Particle>(n);
 }
 
 void show_data()
 {
     for(int i =0 ; i<n ; i++)
     {
-        cout << particles[i]->idx << " "
-             << particles[i]->x << " "
-             << particles[i]->y << " "
-             << particles[i]->z << " "
-             << particles[i]->vx << " "
-             << particles[i]->vy << " "
-             << particles[i]->vz << " "
-             << particles[i]->mass << " " <<endl;
+        cout << particles[i].idx << " "
+             << particles[i].x << " "
+             << particles[i].y << " "
+             << particles[i].z << " "
+             << particles[i].vx << " "
+             << particles[i].vy << " "
+             << particles[i].vz << " "
+             << particles[i].mass << " " <<endl;
     }
 }
 
@@ -111,7 +113,7 @@ void show_force()
 {
     for(int i =0 ;i<n ; i++)
     {
-        cout << "particle " << particles[i]->idx << " force: " << particles[i]->force << endl;
+        cout << "particle " << particles[i].idx << " force: " << particles[i].force << endl;
     }
 }
 
@@ -122,7 +124,7 @@ void save_force()
 
     for(int i =0; i<n ; i++)
     {
-        fout << particles[i]->idx << "," << particles[i]->force << endl;
+        fout << particles[i].idx << "," << particles[i].force << endl;
     }
 
     fout.close();
@@ -130,16 +132,16 @@ void save_force()
 
 
 
-vector<double> calculate_COM(vector<Particle*> particle_list)
+vector<double> calculate_COM(vector<Particle> &particle_list)
 {
     double total_mass =0;
     double com_x =0 , com_y =0 , com_z =0 ;
-    for(Particle* p : particle_list)
+    for(Particle p : particle_list)
     {
-        total_mass += p->mass;
-        com_x += p->x * p->mass;
-        com_y += p->y * p->mass;
-        com_z += p->z * p->mass;
+        total_mass += p.mass;
+        com_x += p.x * p.mass;
+        com_y += p.y * p.mass;
+        com_z += p.z * p.mass;
     }
     com_x /= total_mass;
     com_y /= total_mass;
@@ -147,14 +149,14 @@ vector<double> calculate_COM(vector<Particle*> particle_list)
     return {com_x, com_y, com_z, total_mass};
 }
 
-vector<double> calculate_size(vector<Particle*> particle_list , double center_x , double center_y, double center_z)
+vector<double> calculate_size(vector<Particle> &particle_list , double center_x , double center_y, double center_z)
 {
     double max_x = 0 , max_y =0, max_z =0 ;
-    for(Particle* p : particle_list)
+    for(Particle p : particle_list)
     {
-        double dx = fabs(p->x - center_x);
-        double dy = fabs(p->y - center_y);
-        double dz = fabs(p->z - center_z);
+        double dx = fabs(p.x - center_x);
+        double dy = fabs(p.y - center_y);
+        double dz = fabs(p.z - center_z);
         if(dx > max_x) max_x = dx;
         if(dy > max_y) max_y = dy;
         if(dz > max_z) max_z = dz;
@@ -162,7 +164,7 @@ vector<double> calculate_size(vector<Particle*> particle_list , double center_x 
     return {max_x, max_y, max_z};
 }
 
-void build_tree(Tree* tree, vector<Particle*> particle_list)
+void build_tree(Tree* tree, vector<Particle> &particle_list)
 {
     if (particle_list.size() == 0 )
     {
@@ -175,11 +177,11 @@ void build_tree(Tree* tree, vector<Particle*> particle_list)
     {
         tree->is_leaf = true;
         tree->has_particle = true;
-        tree->particle = particle_list[0];
-        tree->mass = particle_list[0]->mass;
-        tree->COM_x = particle_list[0]->x;
-        tree->COM_y = particle_list[0]->y;
-        tree->COM_z = particle_list[0]->z;
+        tree->particle = &particle_list[0];
+        tree->mass = particle_list[0].mass;
+        tree->COM_x = particle_list[0].x;
+        tree->COM_y = particle_list[0].y;
+        tree->COM_z = particle_list[0].z;
         return;
     }
     else
@@ -195,14 +197,14 @@ void build_tree(Tree* tree, vector<Particle*> particle_list)
         vector<double> sizes = calculate_size(particle_list, tree->COM_x, tree->COM_y, tree->COM_z);
         double child_size = max(sizes[0],max(sizes[1],sizes[2]));
         tree->size = child_size * 2;
-        vector<Particle*> child_particles[8];
+        vector<vector<Particle>> child_particles(8);
 
-        for(Particle* p : particle_list)
+        for(Particle p : particle_list)
         {
             int octant = 0;
-            if(p->x > tree->COM_x) octant |= 1;
-            if(p->y > tree->COM_y) octant |= 2;
-            if(p->z > tree->COM_z) octant |= 4;
+            if(p.x > tree->COM_x) octant |= 1;
+            if(p.y > tree->COM_y) octant |= 2;
+            if(p.z > tree->COM_z) octant |= 4;
 
             child_particles[octant].push_back(p);
         }
@@ -218,33 +220,27 @@ void build_tree(Tree* tree, vector<Particle*> particle_list)
     }
 }
 
-vector<double> distance(Particle *p, Tree* tree)
+double calculate_distance(Particle &p, Tree* tree)
 {
-    double dx = tree->COM_x - p->x;
-    double dy = tree->COM_y - p->y;
-    double dz = tree->COM_z - p->z;
+    double dx = tree->COM_x - p.x;
+    double dy = tree->COM_y - p.y;
+    double dz = tree->COM_z - p.z;
 
-    return {dx, dy, dz};
+    return sqrtf(dx*dx + dy*dy + dz*dz);
 }
 
-double calculate_distance(Particle *p, Tree* tree)
-{
-    vector<double> dist = distance(p, tree);
-    return sqrtf(dist[0]*dist[0] + dist[1]*dist[1] + dist[2]*dist[2]);
-}
-
-void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, double& az, double &theta)
+void calculate_acceleration(Particle &p, Tree* tree, double& ax, double& ay, double& az)
 {
     if(tree==nullptr || tree->mass == 0) return;
-    if(tree->is_leaf == true && tree->particle == p) return;
+    if(tree->is_leaf == true && tree->particle == &p) return;
 
     double d = calculate_distance(p,tree);
     
     if((tree->size / d) < theta || tree->is_leaf == true)
     {
-        double dx = tree->COM_x - p->x;
-        double dy = tree->COM_y - p->y;
-        double dz = tree->COM_z - p->z;
+        double dx = tree->COM_x - p.x;
+        double dy = tree->COM_y - p.y;
+        double dz = tree->COM_z - p.z;
         double dist_sqr = dx*dx + dy*dy + dz*dz + softening*softening;
                 
         double invDist = 1.0/ sqrtf(dist_sqr);
@@ -262,7 +258,7 @@ void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, dou
         {
             if(tree->child_particles[i] != nullptr)
             {
-                calculate_acceleration(p, tree->child_particles[i],ax,ay,az,theta);
+                calculate_acceleration(p, tree->child_particles[i],ax,ay,az);
             }
         }
     }
@@ -279,19 +275,19 @@ void nbody()
     {
         double ax=0,ay=0,az=0;
 
-        calculate_acceleration(particles[i], root, ax, ay, az, theta);
+        calculate_acceleration(particles[i], root, ax, ay, az);
 
-        particles[i]->vx += ax * dt;
-        particles[i]->vy += ay * dt;
-        particles[i]->vz += az * dt;
+        particles[i].vx += ax * dt;
+        particles[i].vy += ay * dt;
+        particles[i].vz += az * dt;
 
-        double force = sqrtf(ax*ax + ay*ay + az*az) * particles[i]->mass;
-        particles[i]->force = force;
+        double force = sqrtf(ax*ax + ay*ay + az*az) * particles[i].mass;
+        particles[i].force = force;
    
     }
     for(int i=0;i<n;i++)
     {
-        particles[i]->update_position(dt);
+        particles[i].update_position(dt);
     }
 
     delete root;
