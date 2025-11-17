@@ -34,7 +34,7 @@ struct Particle
     }
 };
 
-vector<Particle> particles;
+Particle* particles;
 
 void read_data()
 {
@@ -65,7 +65,7 @@ void read_data()
             else if(_==6) vz = stod(value);
             else if(_==7) mass = stod(value);
         }
-        particles[i] = Particle(idx, x, y, z, vx, vy, vz, mass);
+        new (&particles[i]) Particle(idx, x, y, z, vx, vy, vz, mass);
     }
     
     fin.close();
@@ -73,7 +73,7 @@ void read_data()
 
 void allocate_memory()
 {
-    particles = vector<Particle>(n);
+    particles = (Particle*) malloc(n * sizeof(Particle));
 }
 
 void show_data()

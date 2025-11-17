@@ -28,6 +28,8 @@ struct Particle
     Particle(int idx, double x, double y, double z, double vx, double vy, double vz, double mass)
         : idx(idx), x(x), y(y), z(z), vx(vx), vy(vy), vz(vz), mass(mass), force(0) {}
 
+    
+    __host__ __device__    
     void update_position(double dt)
     {
         x += vx*dt;
@@ -45,6 +47,16 @@ struct Tree
     bool has_particle;
     double size;
     Tree* child_particles[8];
+
+    Tree(){}
+
+    Tree() : COM_x(0), COM_y(0), COM_z(0), mass(0), particle(nullptr), is_leaf(false), has_particle(false), size(0)
+    {
+        for(int i=0 ; i<8;i++)
+        {
+            child_particles[i] = nullptr;
+        }
+    }
 
     bool isEmpty()
     {
