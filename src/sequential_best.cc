@@ -7,7 +7,7 @@
 #include <chrono>
 using namespace std;
 
-const int n = 10000;
+const int n = 100000;
 const double theta = 0.5;
 const double N_steps = 10;
 const double dt = 0.1;
@@ -161,7 +161,7 @@ void save_force()
     fout.close();
 }
 
-vector<double> calculate_COM(vector<Particle*> &particle_list)
+vector<double> calculate_COM(vector<Particle*> particle_list)
 {
     double total_mass =0;
     double com_x =0 , com_y =0 , com_z =0 ;
@@ -179,10 +179,10 @@ vector<double> calculate_COM(vector<Particle*> &particle_list)
     return {com_x, com_y, com_z, total_mass};
 }
 
-vector<double> calculate_size(vector<Particle*> &particle_list , double center_x , double center_y, double center_z)
+vector<double> calculate_size(vector<Particle*> particle_list , double center_x , double center_y, double center_z)
 {
     double max_x = 0 , max_y =0, max_z =0 ;
-    for(Particle *p : particle_list)
+    for(Particle* p : particle_list)
     {
         double dx = fabs(p->x - center_x);
         double dy = fabs(p->y - center_y);
@@ -194,16 +194,17 @@ vector<double> calculate_size(vector<Particle*> &particle_list , double center_x
     return {max_x, max_y, max_z};
 }
 
-void build_tree(Tree* tree, vector<Particle*> &particle_list)
+void build_tree(Tree* tree, vector<Particle*> particle_list)
 {
-    if (particle_list.size() == 0 )
+    int size = particle_list.size();
+    if (size == 0 )
     {
         tree->is_leaf = true;
         tree->has_particle = false;
         tree->particle = nullptr;
         return;
     }
-    else if(particle_list.size() == 1)
+    else if(size == 1)
     {
         tree->is_leaf = true;
         tree->has_particle = true;
@@ -227,9 +228,9 @@ void build_tree(Tree* tree, vector<Particle*> &particle_list)
         vector<double> sizes = calculate_size(particle_list, tree->COM_x, tree->COM_y, tree->COM_z);
         double child_size = max(sizes[0],max(sizes[1],sizes[2]));
         tree->size = child_size * 2;
-        vector<vector<Particle*>> child_particles(8);
+        vector<Particle*> child_particles[8];
 
-        for(Particle *p : particle_list)
+        for(Particle* p : particle_list)
         {
             int octant = 0;
             if(p->x > tree->COM_x) octant |= 1;
@@ -241,6 +242,7 @@ void build_tree(Tree* tree, vector<Particle*> &particle_list)
         for(int i =0 ;i <8; i++)
         {
             tree->child_particles[i] = allocate_tree();
+             
             build_tree(tree->child_particles[i], child_particles[i]);
         }
 
@@ -292,45 +294,46 @@ void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, dou
 
 }
 
-void calculate_force(Particle *particle_ptrs,Tree* root)
+void calculate_force(Particle *p,Tree* root)
 {
     double ax=0,ay=0,az=0;
 
-    calculate_acceleration(particles, root, ax, ay, az);
+    calculate_acceleration(p, root, ax, ay, az);
     
-    particles->vx += ax * dt;
-    particles->vy += ay * dt;
-    particles->vz += az * dt;
+    p->vx += ax * dt;
+    p->vy += ay * dt;
+    p->vz += az * dt;
 
-    double force = sqrtf(ax*ax + ay*ay + az*az) * particles->mass;
-    particles->force = force;
+    double force = sqrtf(ax*ax + ay*ay + az*az) * p->mass;
+    p->force = force;
 }
 
-void update_positions(vector<Particle*>&particles)
+void update_positions(Particle* particles)
 {
     for(int i=0;i<n;i++)
     {
-        particles[i]->update_position(dt);
+        particles[i].update_position(dt);
     }
 }
 void nbody()
 {
-    vector<Particle*> particle_ptrs(n);
-    for(int i=0 ; i<n ; i++)
+    Tree* root = allocate_tree();
+    vector<Particle*> particle_list(n);
+    particle_list.reserve(n);
+
+    for(int i=0;i<n;i++)
     {
-        particle_ptrs[i] = &particles[i];
+        particle_list[i] = &particles[i];
     }
 
-    Tree* root = allocate_tree();
-    build_tree(root,particle_ptrs);
-    
+    build_tree(root,particle_list);
     
     for(int i =0 ; i<n ; i++)
     {
-        calculate_force(particle_ptrs[i], root);
+        calculate_force(&particles[i], root);
     }
-    update_positions(particle_ptrs);
-    // delete_tree(root);
+    update_positions(particles);
+    delete_tree(root);
 }
 
 void save_time(double time_elapsed)
