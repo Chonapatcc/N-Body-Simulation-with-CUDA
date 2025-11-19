@@ -8,7 +8,7 @@
 #include <cuda_runtime.h>
 using namespace std;
 
-#define n 10000
+#define n 100000
 #define theta 0.5
 #define N_steps 10
 #define dt 0.1
@@ -68,7 +68,7 @@ struct Tree
 Particle* particles;
 Tree * tree_root;
 int pool_idx =0;
-const int MAX_NODES = n*4;
+const int MAX_NODES = n*5;
 
 void read_data()
 {
@@ -368,8 +368,6 @@ void save_time(double time_elapsed)
 
 int main()
 {
-    size_t stackSize = 8192;
-    cudaDeviceSetLimit(cudaLimitStackSize, stackSize);
     allocate_memory();
     read_data();
     
@@ -377,7 +375,7 @@ int main()
     for(int step =0 ; step< N_steps;step++)
     {
         nbody();
-        cout << "Done " << step+1 << " / " << N_steps << " steps." << endl;
+        cout << "Step " << step+1 << " completed." << endl;
     }
     auto end = chrono::high_resolution_clock::now();
 

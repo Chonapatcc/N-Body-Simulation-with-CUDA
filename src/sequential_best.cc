@@ -7,12 +7,12 @@
 #include <chrono>
 using namespace std;
 
-const int n = 10000;
-const double theta = 0.5;
-const double N_steps = 10;
-const double dt = 0.1;
-const double G = 6.6743e-11;
-const double softening = 1e-8;
+#define n 10000
+#define theta 0.5
+#define N_steps 10
+#define dt 0.1
+#define G 6.6743e-11
+#define softening 1e-8
 
 struct Particle
 {
@@ -60,6 +60,9 @@ struct Tree
 };
 
 Particle* particles;
+Tree * tree_root;
+int pool_idx =0;
+const int MAX_NODES = n*5;
 
 void read_data()
 {
@@ -98,31 +101,21 @@ void read_data()
 
 Tree* allocate_tree()
 {
-    Tree* tree = nullptr;
+    if(pool_idx >= MAX_NODES)
+    {
+        return nullptr;
+    }
 
-    tree = (Tree*) malloc (sizeof (Tree));
+    Tree* tree = &tree_root[pool_idx++];
 
     new (tree) Tree();
     return tree;
 }
 
-void delete_tree(Tree* tree)
-{
-    if(tree == nullptr) return;
-
-    if(!tree->is_leaf)
-    {
-        for(int i=0 ;i <8;i++)
-        {
-            delete_tree(tree->child_particles[i]);
-        }
-    }
-    free(tree);
-}
-
 void allocate_memory()
 {
     particles = (Particle*) malloc(n * sizeof(Particle));
+    tree_root = (Tree*) malloc(MAX_NODES * sizeof(Tree));
 }
 
 void show_data()
@@ -161,7 +154,7 @@ void save_force()
     fout.close();
 }
 
-vector<double> calculate_COM(vector<Particle*> particle_list)
+vector<double> calculate_COM(vector<Particle*> &particle_list)
 {
     double total_mass =0;
     double com_x =0 , com_y =0 , com_z =0 ;
@@ -179,7 +172,7 @@ vector<double> calculate_COM(vector<Particle*> particle_list)
     return {com_x, com_y, com_z, total_mass};
 }
 
-vector<double> calculate_size(vector<Particle*> particle_list , double center_x , double center_y, double center_z)
+vector<double> calculate_size(vector<Particle*> &particle_list , double center_x , double center_y, double center_z)
 {
     double max_x = 0 , max_y =0, max_z =0 ;
     for(Particle* p : particle_list)
@@ -194,7 +187,7 @@ vector<double> calculate_size(vector<Particle*> particle_list , double center_x 
     return {max_x, max_y, max_z};
 }
 
-void build_tree(Tree* tree, vector<Particle*> particle_list)
+void build_tree(Tree* tree, vector<Particle*> &particle_list)
 {
     int size = particle_list.size();
     if (size == 0 )
@@ -317,6 +310,7 @@ void update_positions(Particle* particles)
 }
 void nbody()
 {
+    pool_idx =0 ;
     Tree* root = allocate_tree();
     vector<Particle*> particle_list(n);
     particle_list.reserve(n);
@@ -333,7 +327,7 @@ void nbody()
         calculate_force(&particles[i], root);
     }
     update_positions(particles);
-    delete_tree(root);
+
 }
 
 void save_time(double time_elapsed)
@@ -351,9 +345,11 @@ int main()
     read_data();
     
     auto start = chrono::high_resolution_clock::now();
+
     for(int step =0 ; step< N_steps;step++)
     {
         nbody();
+        cout << "Step " << step+1 << " completed." << endl;
     }
     auto end = chrono::high_resolution_clock::now();
 
@@ -363,5 +359,6 @@ int main()
     save_force();
     
     free(particles);
+    free(tree_root);
     return 0;
 }
