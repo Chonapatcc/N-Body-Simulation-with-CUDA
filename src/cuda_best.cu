@@ -5,14 +5,15 @@
 #include <string>
 #include <cmath>
 #include <chrono>
+#include <cuda_runtime.h>
 using namespace std;
 
-const int n = 100000;
-const double theta = 0.5;
-const double N_steps = 10;
-const double dt = 0.1;
-const double G = 6.6743e-11;
-const double softening = 1e-8;
+#define n 10000
+#define theta 0.5
+#define N_steps 10
+#define dt 0.1
+#define G 6.6743e-11
+#define softening 1e-8
 
 struct Particle
 {
@@ -22,12 +23,15 @@ struct Particle
     double mass;
     double force;
 
+    __host__ __device__
     Particle() {}
 
+    __host__ __device__
     Particle(int idx, double x, double y, double z, double vx, double vy, double vz, double mass)
         : idx(idx), x(x), y(y), z(z), vx(vx), vy(vy), vz(vz), mass(mass), force(0) {}
 
-    void update_position(double dt)
+    __host__ __device__
+    void update_position()
     {
         x += vx*dt;
         y += vy*dt;
@@ -45,6 +49,7 @@ struct Tree
     double size;
     Tree* child_particles[8];
 
+    __host__ __device__
     Tree() : COM_x(0), COM_y(0), COM_z(0), mass(0), particle(nullptr), is_leaf(true), has_particle(false), size(0)
     {
         for(int i=0;i<8;i++)
@@ -53,6 +58,7 @@ struct Tree
         }
     }
 
+    __host__ __device__
     bool isEmpty()
     {
         return !has_particle;
@@ -60,6 +66,9 @@ struct Tree
 };
 
 Particle* particles;
+Tree * tree_root;
+int pool_idx =0;
+const int MAX_NODES = n*4;
 
 void read_data()
 {
@@ -98,31 +107,21 @@ void read_data()
 
 Tree* allocate_tree()
 {
-    Tree* tree = nullptr;
+    if(pool_idx >= MAX_NODES)
+    {
+        return nullptr;
+    }
 
-    tree = (Tree*) malloc (sizeof (Tree));
+    Tree* tree = &tree_root[pool_idx++];
 
     new (tree) Tree();
     return tree;
 }
 
-void delete_tree(Tree* tree)
-{
-    if(tree == nullptr) return;
-
-    if(!tree->is_leaf)
-    {
-        for(int i=0 ;i <8;i++)
-        {
-            delete_tree(tree->child_particles[i]);
-        }
-    }
-    free(tree);
-}
-
 void allocate_memory()
 {
-    particles = (Particle*) malloc(n * sizeof(Particle));
+    cudaMallocManaged(&particles,n * sizeof(Particle));
+    cudaMallocManaged(&tree_root, MAX_NODES * sizeof(Tree));
 }
 
 void show_data()
@@ -151,7 +150,7 @@ void show_force()
 void save_force()
 {
     fstream fout;
-    fout.open("../result/sequential_best_force_" + to_string(n) +".csv", ios::out);
+    fout.open("../result/cuda_best_force_" + to_string(n) +".csv", ios::out);
 
     for(int i =0; i<n ; i++)
     {
@@ -161,7 +160,7 @@ void save_force()
     fout.close();
 }
 
-vector<double> calculate_COM(vector<Particle*> particle_list)
+vector<double> calculate_COM(vector<Particle*> &particle_list)
 {
     double total_mass =0;
     double com_x =0 , com_y =0 , com_z =0 ;
@@ -179,7 +178,7 @@ vector<double> calculate_COM(vector<Particle*> particle_list)
     return {com_x, com_y, com_z, total_mass};
 }
 
-vector<double> calculate_size(vector<Particle*> particle_list , double center_x , double center_y, double center_z)
+vector<double> calculate_size(vector<Particle*> &particle_list , double &center_x , double &center_y, double &center_z)
 {
     double max_x = 0 , max_y =0, max_z =0 ;
     for(Particle* p : particle_list)
@@ -194,7 +193,7 @@ vector<double> calculate_size(vector<Particle*> particle_list , double center_x 
     return {max_x, max_y, max_z};
 }
 
-void build_tree(Tree* tree, vector<Particle*> particle_list)
+void build_tree(Tree* tree, vector<Particle*> &particle_list)
 {
     int size = particle_list.size();
     if (size == 0 )
@@ -249,7 +248,7 @@ void build_tree(Tree* tree, vector<Particle*> particle_list)
     }
 }
 
-double calculate_distance(Particle *p, Tree* tree)
+__device__ double calculate_distance(Particle *p, Tree* tree)
 {
     double dx = tree->COM_x - p->x;
     double dy = tree->COM_y - p->y;
@@ -258,7 +257,7 @@ double calculate_distance(Particle *p, Tree* tree)
     return sqrtf(dx*dx + dy*dy + dz*dz);
 }
 
-void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, double& az)
+__device__ void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, double& az)
 {
     if(tree==nullptr || tree->mass == 0) return;
     if(tree->is_leaf == true && tree->particle == p) return;
@@ -294,7 +293,7 @@ void calculate_acceleration(Particle *p, Tree* tree, double& ax, double& ay, dou
 
 }
 
-void calculate_force(Particle *p,Tree* root)
+__device__ void calculate_force_device(Particle *p,Tree* root)
 {
     double ax=0,ay=0,az=0;
 
@@ -308,15 +307,37 @@ void calculate_force(Particle *p,Tree* root)
     p->force = force;
 }
 
-void update_positions(Particle* particles)
+__global__ void calculate_force_kernel(Particle* particles, Tree* root)
 {
-    for(int i=0;i<n;i++)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx<n)
     {
-        particles[i].update_position(dt);
+        calculate_force_device(&particles[idx], root);
     }
 }
+
+__global__ void update_positions_kernel(Particle* particles)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i<n)
+    {
+        particles[i].update_position();
+    }
+}
+
+void update_positions(Particle* particles)
+{
+    int blockSize = 256;
+    cudaOccupancyMaxPotentialBlockSize(NULL, &blockSize,update_positions_kernel,0,n);
+
+    int numBlocks = (n + blockSize - 1) / blockSize;
+    update_positions_kernel<<<numBlocks, blockSize>>>(particles);
+    cudaDeviceSynchronize();
+}
+
 void nbody()
 {
+    pool_idx =0 ;
     Tree* root = allocate_tree();
     vector<Particle*> particle_list(n);
     particle_list.reserve(n);
@@ -327,33 +348,36 @@ void nbody()
     }
 
     build_tree(root,particle_list);
-    
-    for(int i =0 ; i<n ; i++)
-    {
-        calculate_force(&particles[i], root);
-    }
+    int blockSize = 256;
+    cudaOccupancyMaxPotentialBlockSize(NULL, &blockSize,calculate_force_kernel,0,n);
+    int numBlocks = (n+blockSize -1) / blockSize;
+
+    calculate_force_kernel<<<numBlocks, blockSize>>>(particles, root);
+    cudaDeviceSynchronize();
+
     update_positions(particles);
-    delete_tree(root);
 }
 
 void save_time(double time_elapsed)
 {
     fstream fout;
-    fout.open("../result/sequential_best_time_" + to_string(n) +".txt", ios::out);
+    fout.open("../result/cuda_best_time_" + to_string(n) +".txt", ios::out);
     fout << "Time elapsed: " << time_elapsed << " seconds" <<endl;
     fout.close();
 }
 
 int main()
 {
+    size_t stackSize = 8192;
+    cudaDeviceSetLimit(cudaLimitStackSize, stackSize);
     allocate_memory();
-
     read_data();
     
     auto start = chrono::high_resolution_clock::now();
     for(int step =0 ; step< N_steps;step++)
     {
         nbody();
+        cout << "Done " << step+1 << " / " << N_steps << " steps." << endl;
     }
     auto end = chrono::high_resolution_clock::now();
 
@@ -362,6 +386,7 @@ int main()
     save_time(elapsed.count());
     save_force();
     
-    free(particles);
+    cudaFree(particles);
+    cudaFree(tree_root);
     return 0;
 }

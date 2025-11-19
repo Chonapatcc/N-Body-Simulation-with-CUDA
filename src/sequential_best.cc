@@ -7,7 +7,7 @@
 #include <chrono>
 using namespace std;
 
-const int n = 100000;
+const int n = 10000;
 const double theta = 0.5;
 const double N_steps = 10;
 const double dt = 0.1;
@@ -27,7 +27,7 @@ struct Particle
     Particle(int idx, double x, double y, double z, double vx, double vy, double vz, double mass)
         : idx(idx), x(x), y(y), z(z), vx(vx), vy(vy), vz(vz), mass(mass), force(0) {}
 
-    void update_position(double dt)
+    void update_position()
     {
         x += vx*dt;
         y += vy*dt;
@@ -312,7 +312,7 @@ void update_positions(Particle* particles)
 {
     for(int i=0;i<n;i++)
     {
-        particles[i].update_position(dt);
+        particles[i].update_position();
     }
 }
 void nbody()
